@@ -218,3 +218,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local datasets (do not upload to GitHub)
+data/
+
+# Generated outputs
+outputs/
+
+# PyCharm settings
+.idea/
+
+# Trained deep learning models
+*.pth
+*.pt
