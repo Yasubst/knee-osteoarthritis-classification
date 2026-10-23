@@ -231,3 +231,25 @@ outputs/
 # Trained deep learning models
 *.pth
 *.pt
+
+
+# Assignment submission files
+Assignment_Submission/
+Assignment_Submission_Small/
+Knee_Final_Submission/
+*.zip
+
+# Python environment and temporary files
+.venv/
+__pycache__/
+*.pyc
+.idea/
+
+# Large datasets and trained model checkpoints
+data/
+*.pth
+*.pt
+
+# Temporary files
+.DS_Store
+Thumbs.db

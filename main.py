@@ -1,325 +1,273 @@
 
-# ============================================================
-# KNEE OSTEOARTHRITIS PROJECT
-# PART 1: REGION OF INTEREST (ROI) EXTRACTION
-#
-# Goal:
-# Extract two knee regions from each of four DICOM X-rays
-# using BoneFinder landmarks and a 1 cm margin.
-# ============================================================
+# ==================================================
+# KNEE OSTEOARTHRITIS CLASSIFICATION
+# FIVE-FOLD CROSS-VALIDATION TRAINING
+# ==================================================
 
-
-# -------------------- 1. IMPORT LIBRARIES --------------------
-
+import csv
 from pathlib import Path
-import math
+from torch.utils.data import DataLoader
 
-import pydicom
-import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from dataset import KneeDataset
 
+from trainer import (
+    initialize_training,
+    train_one_epoch,
+    validate_one_epoch,
+    save_best_model
+)
 
-# -------------------- 2. DEFINE FOLDER PATHS --------------------
+from args import (
+    DEVICE,
+    EPOCHS,
+    NUM_FOLDS,
+    BATCH_SIZE
+)
 
-# Folder containing DICOM files: 1, 2, 3, 4
-DICOM_FOLDER = Path("data/ROI_Samples/dicoms")
-
-# Folder containing landmark files: 1.pts, 2.pts, etc.
-LANDMARK_FOLDER = Path("data/ROI_Samples/landmarks")
-
-# Folder where cropped knee images will be saved
-OUTPUT_FOLDER = Path("outputs/roi_images")
-
-# Create the output folder if it does not exist
-OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
-
-
-# -------------------- 3. READ A DICOM IMAGE --------------------
-
-def read_dicom(file_path):
-    """Read a DICOM file and return its image and pixel spacing."""
-
-    # Open the DICOM file
-    dicom = pydicom.dcmread(file_path)
-
-    # Convert DICOM pixel data into a NumPy image array
-    image = dicom.pixel_array
+from utils import save_fold_plots
 
 
-    # PixelSpacing is [row spacing, column spacing] in mm
-    row_spacing = float(dicom.PixelSpacing[0])
-    column_spacing = float(dicom.PixelSpacing[1])
+# ==================================================
+# 1. CREATE DATA LOADERS FOR EACH FOLD
+# ==================================================
 
-    return image, row_spacing, column_spacing
+def create_fold_dataloaders(fold):
 
+    split_folder = Path("outputs/splits")
 
-# -------------------- 4. READ BONEFINDER LANDMARKS --------------------
-
-def read_landmarks(file_path):
-    """Read the X and Y coordinates from a BoneFinder .pts file."""
-
-    x_coordinates = []
-    y_coordinates = []
-
-    # Open the landmark file
-    with open(file_path, "r") as file:
-
-        # Read the file line by line
-        for line in file:
-
-            # Remove extra spaces and split into values
-            parts = line.strip().split()
-
-            # Coordinate lines should contain exactly 2 values
-            if len(parts) == 2:
-
-                try:
-                    # Convert the values into decimal numbers
-                    x = float(parts[0])
-                    y = float(parts[1])
-
-                    # Store the coordinates
-                    x_coordinates.append(x)
-                    y_coordinates.append(y)
-
-                except ValueError:
-                    # Ignore lines that do not contain numbers
-                    continue
-
-    # Check that the expected 148 points were found
-    if len(x_coordinates) != 148:
-        raise ValueError(
-            f"{file_path}: Expected 148 landmarks, "
-            f"found {len(x_coordinates)}"
-        )
-
-    return x_coordinates, y_coordinates
-
-
-# -------------------- 5. CALCULATE A BOUNDING BOX --------------------
-
-def calculate_bounding_box(x_coordinates, y_coordinates):
-    """Find the smallest rectangle containing all given landmarks."""
-
-    # Find the minimum and maximum horizontal positions
-    x_min = min(x_coordinates)
-    x_max = max(x_coordinates)
-
-    # Find the minimum and maximum vertical positions
-    y_min = min(y_coordinates)
-    y_max = max(y_coordinates)
-
-    return x_min, y_min, x_max, y_max
-
-
-# -------------------- 6. ADD A 1 CM MARGIN --------------------
-
-def add_margin(box, row_spacing, column_spacing, image_shape):
-    """Expand a bounding box by 10 mm in every direction."""
-
-    # Convert 10 mm into pixels
-    # ceil() rounds upward to the next whole pixel
-    margin_y = math.ceil(10 / row_spacing)
-    margin_x = math.ceil(10 / column_spacing)
-
-    # Get the image dimensions
-    height, width = image_shape
-
-    # Unpack the original bounding box
-    x_min, y_min, x_max, y_max = box
-
-    # Expand the rectangle while staying inside the image
-    expanded_box = (
-        max(0, math.floor(x_min) - margin_x),
-        max(0, math.floor(y_min) - margin_y),
-        min(width, math.ceil(x_max) + margin_x),
-        min(height, math.ceil(y_max) + margin_y)
+    # Load training dataset
+    train_dataset = KneeDataset(
+        split_folder / f"train_fold_{fold}.csv"
     )
 
-    return expanded_box
-
-
-# -------------------- 7. CROP A KNEE REGION --------------------
-
-def crop_knee(image, box):
-    """Crop an image using its bounding box coordinates."""
-
-    # Unpack the bounding box
-    x_min, y_min, x_max, y_max = box
-
-    # NumPy slicing uses [rows, columns], meaning [Y, X]
-    cropped_image = image[y_min:y_max, x_min:x_max]
-
-    return cropped_image
-
-
-# -------------------- 8. DISPLAY LANDMARKS AND ROI BOXES --------------------
-
-def display_roi(image, x_coordinates, y_coordinates,
-                image_left_box, image_right_box, image_number):
-    """Display an X-ray with landmarks and both ROI rectangles."""
-
-    # Create a figure
-    fig, ax = plt.subplots(figsize=(12, 8))
-
-    # Display the original X-ray
-    ax.imshow(image, cmap="gray")
-
-    # Show the BoneFinder landmark points in red
-    ax.scatter(
-        x_coordinates,
-        y_coordinates,
-        color="red",
-        s=8
+    # Load validation dataset
+    val_dataset = KneeDataset(
+        split_folder / f"val_fold_{fold}.csv"
     )
 
-    # Draw both bounding boxes using different colors
-    for box, color in [
-        (image_left_box, "cyan"),
-        (image_right_box, "lime")
-    ]:
-
-        # Unpack bounding box coordinates
-        x_min, y_min, x_max, y_max = box
-
-        # Create the rectangle
-        rectangle = Rectangle(
-            (x_min, y_min),
-            x_max - x_min,
-            y_max - y_min,
-            linewidth=2,
-            edgecolor=color,
-            facecolor="none"
-        )
-
-        # Add the rectangle to the image
-        ax.add_patch(rectangle)
-
-    # Add a descriptive title
-    ax.set_title(
-        f"Image {image_number}: BoneFinder Landmarks and Knee ROIs"
+    # Training DataLoader
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0
     )
 
-    # Hide axis numbers
-    ax.axis("off")
-
-    # Display the result
-    plt.show()
-
-    # Close the figure to release memory
-    plt.close(fig)
-
-
-# -------------------- 9. PROCESS ONE DICOM IMAGE --------------------
-
-def process_image(image_number):
-    """Process one X-ray and save its two knee ROI images."""
-
-    print(f"\n---------- Processing image {image_number} ----------")
-
-    # Step A: Build matching file paths
-    dicom_path = DICOM_FOLDER / str(image_number)
-    landmark_path = LANDMARK_FOLDER / f"{image_number}.pts"
-
-    # Check that both files exist
-    if not dicom_path.is_file():
-        raise FileNotFoundError(f"Missing DICOM: {dicom_path}")
-
-    if not landmark_path.is_file():
-        raise FileNotFoundError(f"Missing landmarks: {landmark_path}")
-
-    # Step B: Read the X-ray
-    image, row_spacing, column_spacing = read_dicom(dicom_path)
-
-    # Step C: Read the landmarks
-    x_coordinates, y_coordinates = read_landmarks(landmark_path)
-
-    # Step D: Separate the two groups of 74 landmarks
-    first_x = x_coordinates[:74]
-    first_y = y_coordinates[:74]
-
-    second_x = x_coordinates[74:]
-    second_y = y_coordinates[74:]
-
-    # Step E: Calculate a bounding box for each group
-    first_box = calculate_bounding_box(first_x, first_y)
-    second_box = calculate_bounding_box(second_x, second_y)
-
-    # Step F: Add the required 1 cm margin
-    first_box = add_margin(
-        first_box,
-        row_spacing,
-        column_spacing,
-        image.shape
+    # Validation DataLoader
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0
     )
 
-    second_box = add_margin(
-        second_box,
-        row_spacing,
-        column_spacing,
-        image.shape
-    )
-
-    # Step G: Identify image-left and image-right by X position
-    # This does not assume the patient's anatomical side.
-    first_center_x = (first_box[0] + first_box[2]) / 2
-    second_center_x = (second_box[0] + second_box[2]) / 2
-
-    if first_center_x < second_center_x:
-        image_left_box = first_box
-        image_right_box = second_box
-    else:
-        image_left_box = second_box
-        image_right_box = first_box
-
-    # Step H: Print the calculated ROI information
-    print("Image shape:", image.shape)
-    print("Pixel spacing:", row_spacing, column_spacing)
-    print("Landmarks:", len(x_coordinates))
-    print("Image-left ROI:", image_left_box)
-    print("Image-right ROI:", image_right_box)
-
-    # Step I: Display the X-ray with ROI rectangles
-    # Close the plot window to continue to the next image.
-    display_roi(
-        image,
-        x_coordinates,
-        y_coordinates,
-        image_left_box,
-        image_right_box,
-        image_number
-    )
-
-    # Step J: Crop both knees
-    image_left_knee = crop_knee(image, image_left_box)
-    image_right_knee = crop_knee(image, image_right_box)
-
-    # Step K: Save both cropped images
-    # Filenames describe image position, not patient anatomy.
-    left_output = OUTPUT_FOLDER / f"{image_number}_image_left.png"
-    right_output = OUTPUT_FOLDER / f"{image_number}_image_right.png"
-
-    plt.imsave(left_output, image_left_knee, cmap="gray")
-    plt.imsave(right_output, image_right_knee, cmap="gray")
-
-    print("Saved:", left_output)
-    print("Saved:", right_output)
+    return train_loader, val_loader
 
 
-# -------------------- 10. PROCESS ALL FOUR IMAGES --------------------
-
-def main():
-    """Run the complete ROI extraction workflow."""
-
-    # Process DICOM images 1, 2, 3, and 4
-    for image_number in range(1, 5):
-        process_image(image_number)
-
-    print("\nROI extraction completed!")
-    print("Expected output: 8 cropped knee PNG images.")
-
-
-# -------------------- 11. START THE PROGRAM --------------------
+# ==================================================
+# 2. MAIN TRAINING PROCESS
+# ==================================================
 
 if __name__ == "__main__":
-    main()
+
+    print("----- Five-Fold Pretrained CNN Training -----")
+    print("Device:", DEVICE)
+    print("Epochs:", EPOCHS)
+
+    folds_to_run = NUM_FOLDS
+    # Store best results from each fold
+    fold_results = []
+
+    # Train each fold separately
+    for fold in range(1, folds_to_run + 1):
+
+        print(f"\n========== FOLD {fold} ==========")
+
+        # Load datasets for this fold
+        train_loader, val_loader = create_fold_dataloaders(
+            fold
+        )
+
+        print("Training images:", len(train_loader.dataset))
+        print("Validation images:", len(val_loader.dataset))
+
+        # Create fresh model and optimizer for this fold
+        model, criterion, optimizer = initialize_training()
+
+        # Track best validation Balanced Accuracy
+        best_score = -1.0
+
+        # Store the best validation results for this fold
+        best_fold_result = None
+
+        # Store training and validation metrics
+        history = {
+            "train_loss": [],
+            "val_loss": [],
+
+            "train_balanced_accuracy": [],
+            "val_balanced_accuracy": [],
+
+            "train_roc_auc": [],
+            "val_roc_auc": [],
+
+            "train_ap": [],
+            "val_ap": []
+        }
+
+        # ==========================================
+        # 3. TRAIN FOR MULTIPLE EPOCHS
+        # ==========================================
+
+        for epoch in range(EPOCHS):
+
+            print(f"\nEpoch {epoch + 1}/{EPOCHS}")
+
+            # Train one epoch
+            train_loss, train_metrics = train_one_epoch(
+                model,
+                train_loader,
+                criterion,
+                optimizer,
+                DEVICE
+            )
+
+            # Validate one epoch
+            (
+                val_loss,
+                val_accuracy,
+                val_balanced_accuracy,
+                val_roc_auc,
+                val_ap
+            ) = validate_one_epoch(
+                model,
+                val_loader,
+                criterion,
+                DEVICE
+            )
+
+            # Check whether this epoch achieved a new best score
+            is_best = val_balanced_accuracy > best_score
+
+            # Save the best model
+            best_score = save_best_model(
+                model=model,
+                fold=fold,
+                balanced_accuracy=val_balanced_accuracy,
+                best_score=best_score
+            )
+
+            # Record metrics from the best epoch
+            if is_best:
+                best_fold_result = {
+                    "fold": fold,
+                    "best_epoch": epoch + 1,
+                    "balanced_accuracy": val_balanced_accuracy,
+                    "roc_auc": val_roc_auc,
+                    "average_precision": val_ap
+                }
+
+            # ======================================
+            # 4. RECORD METRICS
+            # ======================================
+
+            history["train_loss"].append(train_loss)
+            history["val_loss"].append(val_loss)
+
+            history["train_balanced_accuracy"].append(
+                train_metrics["balanced_accuracy"]
+            )
+
+            history["val_balanced_accuracy"].append(
+                val_balanced_accuracy
+            )
+
+            history["train_roc_auc"].append(
+                train_metrics["roc_auc"]
+            )
+
+            history["val_roc_auc"].append(
+                val_roc_auc
+            )
+
+            history["train_ap"].append(
+                train_metrics["average_precision"]
+            )
+
+            history["val_ap"].append(val_ap)
+
+            # ======================================
+            # 5. PRINT EPOCH RESULTS
+            # ======================================
+
+            print("Training loss:", round(train_loss, 4))
+            print("Validation loss:", round(val_loss, 4))
+
+            print(
+                "Training Balanced Accuracy:",
+                round(
+                    train_metrics["balanced_accuracy"] * 100,
+                    2
+                ),
+                "%"
+            )
+
+            print(
+                "Validation Balanced Accuracy:",
+                round(val_balanced_accuracy * 100, 2),
+                "%"
+            )
+
+            print(
+                "Validation ROC-AUC:",
+                round(val_roc_auc, 4)
+            )
+
+            print(
+                "Validation Average Precision:",
+                round(val_ap, 4)
+            )
+
+        # ==========================================
+        # 6. FINISH FOLD
+        # ==========================================
+
+        print(
+            f"\nFold {fold} completed. "
+            f"Best Balanced Accuracy: {best_score * 100:.2f}%"
+        )
+
+        # Save training and validation graphs
+        save_fold_plots(history, fold)
+
+        # Store the best result from this fold
+        if best_fold_result is not None:
+            fold_results.append(best_fold_result)
+
+            # Save results after each completed fold
+            output_folder = Path("outputs/pretrained")
+            output_folder.mkdir(parents=True, exist_ok=True)
+
+            csv_path = output_folder / "cross_validation_results.csv"
+
+            with open(csv_path, "w", newline="") as file:
+                writer = csv.DictWriter(
+                    file,
+                    fieldnames=[
+                        "fold",
+                        "best_epoch",
+                        "balanced_accuracy",
+                        "roc_auc",
+                        "average_precision"
+                    ]
+                )
+
+                writer.writeheader()
+                writer.writerows(fold_results)
+
+            print("Progress saved:", csv_path)
+
+
+
+
+    print("\nFive-fold training completed successfully!")
