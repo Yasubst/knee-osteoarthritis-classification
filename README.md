@@ -44,16 +44,60 @@ The dataset is imbalanced, with considerably fewer KL4 images.
 
 The pretrained ResNet18 achieved substantially better cross-validation results than the model trained from scratch.
 
+
 ### Held-Out Test Results
 
-The pretrained model selected from fold 3 achieved:
+The ImageNet-pretrained ResNet18 model selected from fold 3 was evaluated on a held-out test set of **471 knee X-ray images**.
 
 | Metric | Result |
 |---|---:|
 | Accuracy | 43.52% |
 | Balanced accuracy | 46.17% |
 | ROC-AUC | 0.7646 |
-| Average precision | 0.5109 |
+| Average precision (AP) | 0.5109 |
+
+### Precision and Recall Evaluation
+
+Precision and recall were evaluated using micro, macro, and weighted averaging across all five Kellgren–Lawrence grades.
+
+| Averaging Method | Precision | Recall |
+|---|---:|---:|
+| Micro | 43.52% | 43.52% |
+| Macro | 52.74% | 46.17% |
+| Weighted | 50.08% | 43.52% |
+
+- **Micro averaging** aggregates predictions across all classes. In single-label multiclass classification, micro precision and recall are equal to overall accuracy.
+- **Macro averaging** gives equal importance to every KL grade, making it useful for assessing performance across imbalanced classes.
+- **Weighted averaging** weights each grade according to the number of actual test images in that class.
+
+#### Precision and Recall by KL Grade
+
+| KL Grade | Precision | Recall | Test Images |
+|---|---:|---:|---:|
+| KL0 | 67.77% | 43.85% | 187 |
+| KL1 | 24.18% | 43.02% | 86 |
+| KL2 | 39.81% | 34.96% | 123 |
+| KL3 | 44.44% | 59.02% | 61 |
+| KL4 | 87.50% | 50.00% | 14 |
+
+#### Interpretation
+
+- **KL0:** Relatively high precision (67.77%), but recall is only 43.85%.
+- **KL1:** Lowest precision (24.18%), indicating many incorrect KL1 predictions.
+- **KL2:** Lowest recall (34.96%), indicating difficulty identifying actual KL2 images.
+- **KL3:** Highest recall (59.02%), but precision is 44.44%.
+- **KL4:** Highest precision (87.50%), but recall is only 50.00%. The model correctly identified 7 of the 14 actual KL4 images.
+
+These results demonstrate that model performance varies substantially across KL grades. The small number of KL4 test images also makes its precision and recall estimates less stable.
+
+The detailed evaluation results are available in:
+
+- `outputs/pretrained/test_results.csv`
+- `outputs/pretrained/test_classification_report.csv`
+- `outputs/pretrained/test_confusion_matrix.png`
+
+The model is intended for educational research and is not validated for clinical diagnosis.
+
 
 ## Visualizations
 
